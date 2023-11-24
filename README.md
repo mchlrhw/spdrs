@@ -4,7 +4,7 @@
 
 ### PoC goals
 
-- [ ] Write simple CLI app to fetch a web page from user input
+- [x] Write simple CLI app to fetch a web page from user input
 - [ ] Extract links using simple strategy, e.g. regex
 - [ ] Print visited URL and extracted links
 

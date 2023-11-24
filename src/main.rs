@@ -14,5 +14,9 @@ async fn main() -> Result<()> {
 
     println!("{url}");
 
+    let resp_text = reqwest::get(url).await?.text().await?;
+
+    println!("{resp_text}");
+
     Ok(())
 }
