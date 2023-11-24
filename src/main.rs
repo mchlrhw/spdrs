@@ -112,6 +112,32 @@ mod tests {
     }
 
     #[test]
+    fn simple_html() {
+        let text = r#"
+<a href="https://wikipedia.org"/>
+<a href="https://wikipedia.org/index.html"/>
+"#;
+        let expected =
+            HashSet::from_iter(["https://wikipedia.org", "https://wikipedia.org/index.html"]);
+
+        let links = extract_links(text);
+
+        assert_eq!(links, expected);
+    }
+
+    #[test]
+    fn html_with_multiple_links_to_a_line() {
+        let text =
+            r#"<a href="https://wikipedia.org"/><a href="https://wikipedia.org/index.html"/>"#;
+        let expected =
+            HashSet::from_iter(["https://wikipedia.org", "https://wikipedia.org/index.html"]);
+
+        let links = extract_links(text);
+
+        assert_eq!(links, expected);
+    }
+
+    #[test]
     fn html_from_the_wild() {
         let text = include_str!("../resources/test-data/wikipedia.org.html");
         let expected = HashSet::from_iter([
