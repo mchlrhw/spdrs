@@ -7,12 +7,22 @@ use std::{
     env,
     sync::{Arc, Mutex},
 };
+use tokio::{
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    task,
+};
+use tracing::{debug, trace};
 use url::Url;
 
 static LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"href="(https?://.+?)""#).expect("we must have written a valid regex")
 });
 static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
+
+struct CrawlData {
+    url: String,
+    links: HashSet<String>,
+}
 
 async fn fetch(url: &str) -> Result<String> {
     let resp_text = reqwest::get(url).await?.text().await?;
@@ -43,29 +53,55 @@ fn filter_external<'l>(links: &HashSet<&'l str>, allowed_subdomain: &str) -> Has
 }
 
 #[async_recursion]
-async fn crawl(url: &str, allowed_subdomain: &str) -> Result<()> {
-    println!("{url}");
-
+async fn crawl(
+    url: &str,
+    allowed_subdomain: &str,
+    print_channel: UnboundedSender<CrawlData>,
+) -> Result<()> {
+    debug!("fetching {url}");
     let resp_text = fetch(url).await?;
+    trace!("received");
+
     let links = extract_links(&resp_text);
+    debug!("extracted {links:?}");
     let filtered = filter_external(&links, allowed_subdomain);
+    debug!("filtered down to {filtered:?}");
+
+    let crawl_data = CrawlData {
+        url: url.to_string(),
+        links: filtered.iter().map(|s| s.to_string()).collect(),
+    };
+
+    debug!("sending crawl data for {url}");
+    print_channel.send(crawl_data)?;
 
     SEEN.lock().unwrap().insert(url.to_string());
 
     for link in &filtered {
-        println!("  * {link}")
-    }
-    println!();
-
-    for link in &filtered {
+        debug!("checking seen for {link}");
         if SEEN.lock().unwrap().contains(&link.to_string()) {
+            debug!("seen {link}, skipping...");
             continue;
+        } else {
+            debug!("not seen {link} yet, crawling...");
         }
 
-        crawl(link, allowed_subdomain).await?;
+        crawl(link, allowed_subdomain, print_channel.clone()).await?;
     }
 
     Ok(())
+}
+
+async fn printer(mut print_channel: UnboundedReceiver<CrawlData>) {
+    while let Some(data) = print_channel.recv().await {
+        let CrawlData { url, links } = data;
+        debug!("printer received crawl data for {url}");
+
+        println!("{url}");
+        for link in links {
+            println!("  * {link}");
+        }
+    }
 }
 
 #[tokio::main]
@@ -75,14 +111,25 @@ async fn main() -> Result<()> {
         bail!("Usage: spdrs <url>");
     }
 
+    tracing_subscriber::fmt()
+        .with_env_filter("spdrs=debug")
+        .with_writer(std::io::stderr)
+        .init();
+
     let url = args
         .get(1)
         .expect("the index must exist due to previous len check");
 
     let parsed_url = Url::parse(url)?;
     let allowed_subdomain = parsed_url.host_str().ok_or(anyhow!("Missing host"))?;
+    debug!("restricting links to {allowed_subdomain}");
 
-    crawl(url, allowed_subdomain).await?;
+    let (snd, rcv) = unbounded_channel();
+    let task_handle = task::spawn(async move { printer(rcv).await });
+
+    crawl(url, allowed_subdomain, snd).await?;
+
+    task_handle.await.unwrap();
 
     Ok(())
 }
