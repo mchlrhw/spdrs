@@ -1,10 +1,11 @@
+use anyhow::{bail, Result};
 use std::env;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        println!("Usage: spdrs <url>");
-        return;
+        bail!("Usage: spdrs <url>");
     }
 
     let url = args
@@ -12,4 +13,6 @@ fn main() {
         .expect("the index must exist due to previous len check");
 
     println!("{url}");
+
+    Ok(())
 }
