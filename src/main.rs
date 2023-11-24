@@ -20,7 +20,7 @@ async fn fetch(url: &str) -> Result<String> {
     Ok(resp_text)
 }
 
-fn extract_links(text: &str) -> Vec<&str> {
+fn extract_links(text: &str) -> HashSet<&str> {
     LINK_REGEX
         .captures_iter(text)
         .map(|c| {
@@ -31,7 +31,7 @@ fn extract_links(text: &str) -> Vec<&str> {
         .collect()
 }
 
-fn filter_external<'l>(links: &[&'l str], allowed_subdomain: &str) -> Vec<&'l str> {
+fn filter_external<'l>(links: &HashSet<&'l str>, allowed_subdomain: &str) -> HashSet<&'l str> {
     links
         .iter()
         .filter(|l| {
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn no_links() {
         let text = "nothing to see here";
-        let expected: Vec<&str> = vec![];
+        let expected = HashSet::new();
 
         let links = extract_links(text);
 
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn single_link() {
         let text = r#"href="https://wikipedia.org""#;
-        let expected: Vec<&str> = vec!["https://wikipedia.org"];
+        let expected = HashSet::from_iter(["https://wikipedia.org"]);
 
         let links = extract_links(text);
 
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn html_from_the_wild() {
         let text = include_str!("../resources/test-data/wikipedia.org.html");
-        let expected: Vec<&str> = vec![
+        let expected = HashSet::from_iter([
             "https://wikis.world/@wikipedia",
             "https://meta.wikimedia.org/wiki/Special:MyLanguage/List_of_Wikipedias",
             "https://donate.wikimedia.org/?utm_medium=portal&utm_campaign=portalFooter&utm_source=portalFooter",
@@ -124,10 +124,26 @@ mod tests {
             "https://creativecommons.org/licenses/by-sa/4.0/",
             "https://meta.wikimedia.org/wiki/Terms_of_use",
             "https://meta.wikimedia.org/wiki/Privacy_policy",
-        ];
+        ]);
 
         let links = extract_links(text);
 
         assert_eq!(links, expected);
+    }
+
+    #[test]
+    fn filter_external_links() {
+        let allowed_subdomain = "example.com";
+        let links = HashSet::from_iter([
+            "http://example.com",
+            "https://example.com/foo.jpg",
+            "http://wikipedia.org/bar.png",
+            "https://wikipedia.org/baz.gif",
+        ]);
+        let expected = HashSet::from_iter(["http://example.com", "https://example.com/foo.jpg"]);
+
+        let filtered = filter_external(&links, allowed_subdomain);
+
+        assert_eq!(filtered, expected);
     }
 }
