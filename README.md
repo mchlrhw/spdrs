@@ -10,7 +10,7 @@
 
 ### Intermediate goals
 
-- [ ] Introduce recursion by fetching extracted links
+- [x] Introduce recursion by fetching extracted links
 - [ ] Eliminate infinite loops by tracking visited pages
 - [ ] Fetch in parallel, if not already
 - [ ] Firm up validation and error handling

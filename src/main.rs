@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use async_recursion::async_recursion;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::env;
@@ -18,6 +19,30 @@ fn extract_links(text: &str) -> Vec<&str> {
         .collect()
 }
 
+async fn fetch(url: &str) -> Result<String> {
+    let resp_text = reqwest::get(url).await?.text().await?;
+
+    Ok(resp_text)
+}
+
+#[async_recursion]
+async fn crawl(url: &str) -> Result<()> {
+    println!("{url}");
+
+    let resp_text = fetch(url).await?;
+    let links = extract_links(&resp_text);
+    for link in &links {
+        println!("  * {link}")
+    }
+    println!();
+
+    for link in &links {
+        crawl(link).await?;
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -29,13 +54,7 @@ async fn main() -> Result<()> {
         .get(1)
         .expect("the index must exist due to previous len check");
 
-    println!("{url}");
-
-    let resp_text = reqwest::get(url).await?.text().await?;
-    for link in extract_links(&resp_text) {
-        println!("  * {link}")
-    }
-    println!();
+    crawl(url).await?;
 
     Ok(())
 }
