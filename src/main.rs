@@ -54,17 +54,17 @@ fn filter_external<'l>(links: &HashSet<&'l str>, allowed_subdomain: &str) -> Has
 
 #[async_recursion]
 async fn crawl(
-    url: &str,
-    allowed_subdomain: &str,
+    url: String,
+    allowed_subdomain: String,
     print_channel: UnboundedSender<CrawlData>,
 ) -> Result<()> {
     debug!("fetching {url}");
-    let resp_text = fetch(url).await?;
+    let resp_text = fetch(&url).await?;
     trace!("received");
 
     let links = extract_links(&resp_text);
     debug!("extracted {links:?}");
-    let filtered = filter_external(&links, allowed_subdomain);
+    let filtered = filter_external(&links, &allowed_subdomain);
     debug!("filtered down to {filtered:?}");
 
     let crawl_data = CrawlData {
@@ -77,7 +77,7 @@ async fn crawl(
 
     SEEN.lock().unwrap().insert(url.to_string());
 
-    for link in &filtered {
+    for link in filtered.into_iter() {
         debug!("checking seen for {link}");
         if SEEN.lock().unwrap().contains(&link.to_string()) {
             debug!("seen {link}, skipping...");
@@ -86,7 +86,11 @@ async fn crawl(
             debug!("not seen {link} yet, crawling...");
         }
 
-        crawl(link, allowed_subdomain, print_channel.clone()).await?;
+        task::spawn(crawl(
+            link.to_owned(),
+            allowed_subdomain.to_owned(),
+            print_channel.clone(),
+        ));
     }
 
     Ok(())
@@ -127,7 +131,7 @@ async fn main() -> Result<()> {
     let (snd, rcv) = unbounded_channel();
     let task_handle = task::spawn(async move { printer(rcv).await });
 
-    crawl(url, allowed_subdomain, snd).await?;
+    crawl(url.to_owned(), allowed_subdomain.to_string(), snd).await?;
 
     task_handle.await.unwrap();
 

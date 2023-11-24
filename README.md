@@ -13,7 +13,7 @@
 - [x] Introduce recursion by fetching extracted links
 - [x] Eliminate infinite loops by tracking visited pages
 - [x] Filter external links
-- [ ] Fetch in parallel, if not already
+- [x] Fetch in parallel, if not already
 - [ ] Firm up validation and error handling
 
 ### Stretch goals
