@@ -2,11 +2,22 @@ use anyhow::{bail, Result};
 use async_recursion::async_recursion;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::env;
+use std::{
+    collections::HashSet,
+    env,
+    sync::{Arc, Mutex},
+};
 
 static LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"href="(https?://.+?)""#).expect("we must have written a valid regex")
 });
+static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
+
+async fn fetch(url: &str) -> Result<String> {
+    let resp_text = reqwest::get(url).await?.text().await?;
+
+    Ok(resp_text)
+}
 
 fn extract_links(text: &str) -> Vec<&str> {
     LINK_REGEX
@@ -17,12 +28,6 @@ fn extract_links(text: &str) -> Vec<&str> {
             link
         })
         .collect()
-}
-
-async fn fetch(url: &str) -> Result<String> {
-    let resp_text = reqwest::get(url).await?.text().await?;
-
-    Ok(resp_text)
 }
 
 #[async_recursion]
@@ -37,7 +42,13 @@ async fn crawl(url: &str) -> Result<()> {
     println!();
 
     for link in &links {
+        if SEEN.lock().unwrap().contains(&link.to_string()) {
+            continue;
+        }
+
         crawl(link).await?;
+
+        SEEN.lock().unwrap().insert(link.to_string());
     }
 
     Ok(())
