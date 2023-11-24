@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use async_recursion::async_recursion;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -7,6 +7,7 @@ use std::{
     env,
     sync::{Arc, Mutex},
 };
+use url::Url;
 
 static LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"href="(https?://.+?)""#).expect("we must have written a valid regex")
@@ -30,25 +31,38 @@ fn extract_links(text: &str) -> Vec<&str> {
         .collect()
 }
 
+fn filter_external<'l>(links: &[&'l str], allowed_subdomain: &str) -> Vec<&'l str> {
+    links
+        .iter()
+        .filter(|l| {
+            l.starts_with(&format!("http://{allowed_subdomain}"))
+                || l.starts_with(&format!("https://{allowed_subdomain}"))
+        })
+        .copied()
+        .collect()
+}
+
 #[async_recursion]
-async fn crawl(url: &str) -> Result<()> {
+async fn crawl(url: &str, allowed_subdomain: &str) -> Result<()> {
     println!("{url}");
 
     let resp_text = fetch(url).await?;
     let links = extract_links(&resp_text);
-    for link in &links {
+    let filtered = filter_external(&links, allowed_subdomain);
+
+    SEEN.lock().unwrap().insert(url.to_string());
+
+    for link in &filtered {
         println!("  * {link}")
     }
     println!();
 
-    for link in &links {
+    for link in &filtered {
         if SEEN.lock().unwrap().contains(&link.to_string()) {
             continue;
         }
 
-        crawl(link).await?;
-
-        SEEN.lock().unwrap().insert(link.to_string());
+        crawl(link, allowed_subdomain).await?;
     }
 
     Ok(())
@@ -65,7 +79,10 @@ async fn main() -> Result<()> {
         .get(1)
         .expect("the index must exist due to previous len check");
 
-    crawl(url).await?;
+    let parsed_url = Url::parse(url)?;
+    let allowed_subdomain = parsed_url.host_str().ok_or(anyhow!("Missing host"))?;
+
+    crawl(url, allowed_subdomain).await?;
 
     Ok(())
 }
