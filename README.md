@@ -18,6 +18,6 @@
 
 ### Stretch goals
 
-- [ ] Parse HTML and extract links from li tags
-- [ ] Spin up a local server to host test web pages
-- [ ] Write E2E tests against local server
+- [ ] Parse HTML and extract links from a and link tags
+- [x] Spin up a local server to host test web pages
+- [x] Write E2E tests against local server

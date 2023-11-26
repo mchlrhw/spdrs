@@ -19,13 +19,14 @@ static LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
 });
 static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
 
+#[derive(Debug, PartialEq)]
 struct CrawlData {
     url: String,
     links: HashSet<String>,
 }
 
 async fn fetch(url: &str) -> Result<String> {
-    let resp_text = reqwest::get(url).await?.text().await?;
+    let resp_text = reqwest::get(url).await?.error_for_status()?.text().await?;
 
     Ok(resp_text)
 }
@@ -222,5 +223,64 @@ mod tests {
         let filtered = filter_external(&links, allowed_subdomain);
 
         assert_eq!(filtered, expected);
+    }
+}
+
+#[cfg(all(test, feature = "e2e"))]
+mod e2e_tests {
+    use super::*;
+
+    async fn receive_crawl_data(mut rcv: UnboundedReceiver<CrawlData>) -> Vec<CrawlData> {
+        let mut crawl_data = vec![];
+        while let Some(data) = rcv.recv().await {
+            crawl_data.push(data);
+        }
+
+        crawl_data
+    }
+
+    #[tokio::test]
+    async fn fetch_local_root() {
+        let res = fetch("http://localhost:8000/").await;
+
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn no_links() {
+        let (snd, rcv) = unbounded_channel();
+        let allowed_subdomain = "localhost:8000".to_string();
+        let url = "http://localhost:8000/no-links.html".to_string();
+
+        let expected = vec![CrawlData {
+            url: "http://localhost:8000/no-links.html".to_string(),
+            links: HashSet::new(),
+        }];
+
+        let res = crawl(url, allowed_subdomain, snd).await;
+        assert!(res.is_ok());
+
+        let crawl_data = receive_crawl_data(rcv).await;
+
+        assert_eq!(crawl_data, expected);
+    }
+
+    #[tokio::test]
+    async fn recursive() {
+        let (snd, rcv) = unbounded_channel();
+        let allowed_subdomain = "localhost:8000".to_string();
+        let url = "http://localhost:8000/recursive.html".to_string();
+
+        let expected = vec![CrawlData {
+            url: "http://localhost:8000/recursive.html".to_string(),
+            links: HashSet::from_iter(["http://localhost:8000/recursive.html".to_string()]),
+        }];
+
+        let res = crawl(url, allowed_subdomain, snd).await;
+        assert!(res.is_ok());
+
+        let crawl_data = receive_crawl_data(rcv).await;
+
+        assert_eq!(crawl_data, expected);
     }
 }
