@@ -12,6 +12,7 @@ use tokio::{
     task,
 };
 use tracing::{debug, trace, warn};
+use tracing_subscriber::EnvFilter;
 use url::Url;
 
 static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
@@ -86,7 +87,7 @@ async fn crawl(
     print_channel: UnboundedSender<CrawlData>,
 ) -> Result<()> {
     debug!("fetching {url}");
-    let resp_text = fetch(url.to_owned()).await?;
+    let resp_text = fetch(url.clone()).await?;
     trace!("received");
 
     let links = extract_links(&resp_text);
@@ -98,7 +99,7 @@ async fn crawl(
 
     let crawl_data = CrawlData {
         url: url.to_string(),
-        links: filtered.iter().map(|s| s.to_string()).collect(),
+        links: filtered.iter().map(ToString::to_string).collect(),
     };
 
     debug!("sending crawl data for {url}");
@@ -106,7 +107,7 @@ async fn crawl(
 
     SEEN.lock().unwrap().insert(url.to_string());
 
-    for link in filtered.into_iter() {
+    for link in filtered {
         let url = match Url::parse(&link) {
             Ok(url) => url,
             Err(error) => {
@@ -120,15 +121,10 @@ async fn crawl(
         if SEEN.lock().unwrap().contains(&link.to_string()) {
             debug!("seen {link}, skipping...");
             continue;
-        } else {
-            debug!("not seen {link} yet, crawling...");
         }
 
-        task::spawn(crawl(
-            url,
-            allowed_subdomain.to_owned(),
-            print_channel.clone(),
-        ));
+        debug!("not seen {link} yet, crawling...");
+        task::spawn(crawl(url, allowed_subdomain.clone(), print_channel.clone()));
     }
 
     Ok(())
@@ -143,6 +139,7 @@ async fn printer(mut print_channel: UnboundedReceiver<CrawlData>) {
         for link in links {
             println!("  * {link}");
         }
+        println!();
     }
 }
 
@@ -154,7 +151,7 @@ async fn main() -> Result<()> {
     }
 
     tracing_subscriber::fmt()
-        .with_env_filter("spdrs=debug")
+        .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
@@ -169,7 +166,7 @@ async fn main() -> Result<()> {
     let (snd, rcv) = unbounded_channel();
     let task_handle = task::spawn(async move { printer(rcv).await });
 
-    crawl(url.to_owned(), allowed_subdomain.to_string(), snd).await?;
+    crawl(url.clone(), allowed_subdomain.to_string(), snd).await?;
 
     task_handle.await.unwrap();
 
