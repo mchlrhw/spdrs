@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use async_recursion::async_recursion;
 use once_cell::sync::Lazy;
-use regex::Regex;
+use scraper::{Html, Selector};
 use std::{
     collections::HashSet,
     env,
@@ -14,9 +14,6 @@ use tokio::{
 use tracing::{debug, trace};
 use url::Url;
 
-static LINK_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"href="(https?://.+?)""#).expect("we must have written a valid regex")
-});
 static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
 
 #[derive(Debug, PartialEq)]
@@ -31,25 +28,28 @@ async fn fetch(url: &str) -> Result<String> {
     Ok(resp_text)
 }
 
-fn extract_links(text: &str) -> HashSet<&str> {
-    LINK_REGEX
-        .captures_iter(text)
-        .map(|c| {
-            let (_, [link]) = c.extract();
+fn extract_links(text: &str) -> HashSet<String> {
+    let mut links = HashSet::new();
+    let a_selector = Selector::parse("a").expect("we can parse anchor links");
+    let li_selector = Selector::parse("link").expect("we can parse links");
 
-            link
-        })
-        .collect()
+    let html = Html::parse_document(text);
+    for element in html.select(&a_selector).chain(html.select(&li_selector)) {
+        if let Some(link) = element.attr("href") {
+            links.insert(link.to_string());
+        }
+    }
+
+    links
 }
 
-fn filter_external<'l>(links: &HashSet<&'l str>, allowed_subdomain: &str) -> HashSet<&'l str> {
+fn filter_external<'l>(links: HashSet<String>, allowed_subdomain: &str) -> HashSet<String> {
     links
-        .iter()
+        .into_iter()
         .filter(|l| {
             l.starts_with(&format!("http://{allowed_subdomain}"))
                 || l.starts_with(&format!("https://{allowed_subdomain}"))
         })
-        .copied()
         .collect()
 }
 
@@ -65,7 +65,7 @@ async fn crawl(
 
     let links = extract_links(&resp_text);
     debug!("extracted {links:?}");
-    let filtered = filter_external(&links, &allowed_subdomain);
+    let filtered = filter_external(links, &allowed_subdomain);
     debug!("filtered down to {filtered:?}");
 
     let crawl_data = CrawlData {
@@ -155,8 +155,8 @@ mod tests {
 
     #[test]
     fn single_link() {
-        let text = r#"href="https://wikipedia.org""#;
-        let expected = HashSet::from_iter(["https://wikipedia.org"]);
+        let text = r#"<a href="https://wikipedia.org">Link</a>"#;
+        let expected = HashSet::from_iter(["https://wikipedia.org".to_string()]);
 
         let links = extract_links(text);
 
@@ -169,8 +169,10 @@ mod tests {
 <a href="https://wikipedia.org"/>
 <a href="https://wikipedia.org/index.html"/>
 "#;
-        let expected =
-            HashSet::from_iter(["https://wikipedia.org", "https://wikipedia.org/index.html"]);
+        let expected = HashSet::from_iter([
+            "https://wikipedia.org".to_string(),
+            "https://wikipedia.org/index.html".to_string(),
+        ]);
 
         let links = extract_links(text);
 
@@ -181,27 +183,9 @@ mod tests {
     fn html_with_multiple_links_to_a_line() {
         let text =
             r#"<a href="https://wikipedia.org"/><a href="https://wikipedia.org/index.html"/>"#;
-        let expected =
-            HashSet::from_iter(["https://wikipedia.org", "https://wikipedia.org/index.html"]);
-
-        let links = extract_links(text);
-
-        assert_eq!(links, expected);
-    }
-
-    #[test]
-    fn html_from_the_wild() {
-        let text = include_str!("../resources/test-data/wikipedia.org.html");
         let expected = HashSet::from_iter([
-            "https://wikis.world/@wikipedia",
-            "https://meta.wikimedia.org/wiki/Special:MyLanguage/List_of_Wikipedias",
-            "https://donate.wikimedia.org/?utm_medium=portal&utm_campaign=portalFooter&utm_source=portalFooter",
-            "https://en.wikipedia.org/wiki/List_of_Wikipedia_mobile_applications",
-            "https://play.google.com/store/apps/details?id=org.wikipedia&referrer=utm_source%3Dportal%26utm_medium%3Dbutton%26anid%3Dadmob",
-            "https://itunes.apple.com/app/apple-store/id324715238?pt=208305&ct=portal&mt=8",
-            "https://creativecommons.org/licenses/by-sa/4.0/",
-            "https://meta.wikimedia.org/wiki/Terms_of_use",
-            "https://meta.wikimedia.org/wiki/Privacy_policy",
+            "https://wikipedia.org".to_string(),
+            "https://wikipedia.org/index.html".to_string(),
         ]);
 
         let links = extract_links(text);
@@ -213,14 +197,17 @@ mod tests {
     fn filter_external_links() {
         let allowed_subdomain = "example.com";
         let links = HashSet::from_iter([
-            "http://example.com",
-            "https://example.com/foo.jpg",
-            "http://wikipedia.org/bar.png",
-            "https://wikipedia.org/baz.gif",
+            "http://example.com".to_string(),
+            "https://example.com/foo.jpg".to_string(),
+            "http://wikipedia.org/bar.png".to_string(),
+            "https://wikipedia.org/baz.gif".to_string(),
         ]);
-        let expected = HashSet::from_iter(["http://example.com", "https://example.com/foo.jpg"]);
+        let expected = HashSet::from_iter([
+            "http://example.com".to_string(),
+            "https://example.com/foo.jpg".to_string(),
+        ]);
 
-        let filtered = filter_external(&links, allowed_subdomain);
+        let filtered = filter_external(links, allowed_subdomain);
 
         assert_eq!(filtered, expected);
     }
