@@ -21,5 +21,5 @@
 - [ ] Parse HTML and extract links from a and link tags
 - [x] Spin up a local server to host test web pages
 - [x] Write E2E tests against local server
-- [ ] Follow scheme relative links
-- [ ] Follow path relative links
+- [x] Follow scheme relative links
+- [x] Follow path relative links

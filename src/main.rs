@@ -11,7 +11,7 @@ use tokio::{
     sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     task,
 };
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 use url::Url;
 
 static SEEN: Lazy<Arc<Mutex<HashSet<String>>>> = Lazy::new(Arc::default);
@@ -22,7 +22,7 @@ struct CrawlData {
     links: HashSet<String>,
 }
 
-async fn fetch(url: &str) -> Result<String> {
+async fn fetch(url: Url) -> Result<String> {
     let resp_text = reqwest::get(url).await?.error_for_status()?.text().await?;
 
     Ok(resp_text)
@@ -43,7 +43,7 @@ fn extract_links(text: &str) -> HashSet<String> {
     links
 }
 
-fn filter_external<'l>(links: HashSet<String>, allowed_subdomain: &str) -> HashSet<String> {
+fn filter_external(links: HashSet<String>, allowed_subdomain: &str) -> HashSet<String> {
     links
         .into_iter()
         .filter(|l| {
@@ -53,19 +53,47 @@ fn filter_external<'l>(links: HashSet<String>, allowed_subdomain: &str) -> HashS
         .collect()
 }
 
+fn resolve_relative_paths(base: &Url, links: HashSet<String>) -> HashSet<String> {
+    links
+        .into_iter()
+        .map(|l| match base.join(&l) {
+            Ok(url) => url.to_string(),
+            _ => l,
+        })
+        .collect()
+}
+
+fn resolve_relative_schemes(base: &Url, links: HashSet<String>) -> HashSet<String> {
+    links
+        .into_iter()
+        .map(|l| {
+            if l.starts_with("//") {
+                match Url::parse(&format!("{}:{l}", base.scheme())) {
+                    Ok(url) => url.to_string(),
+                    _ => l,
+                }
+            } else {
+                l
+            }
+        })
+        .collect()
+}
+
 #[async_recursion]
 async fn crawl(
-    url: String,
+    url: Url,
     allowed_subdomain: String,
     print_channel: UnboundedSender<CrawlData>,
 ) -> Result<()> {
     debug!("fetching {url}");
-    let resp_text = fetch(&url).await?;
+    let resp_text = fetch(url.to_owned()).await?;
     trace!("received");
 
     let links = extract_links(&resp_text);
     debug!("extracted {links:?}");
-    let filtered = filter_external(links, &allowed_subdomain);
+    let resolved_schemes = resolve_relative_schemes(&url, links);
+    let resolved_paths = resolve_relative_paths(&url, resolved_schemes);
+    let filtered = filter_external(resolved_paths, &allowed_subdomain);
     debug!("filtered down to {filtered:?}");
 
     let crawl_data = CrawlData {
@@ -79,6 +107,15 @@ async fn crawl(
     SEEN.lock().unwrap().insert(url.to_string());
 
     for link in filtered.into_iter() {
+        let url = match Url::parse(&link) {
+            Ok(url) => url,
+            Err(error) => {
+                warn!("Error parsing {link} ({error})");
+
+                continue;
+            }
+        };
+
         debug!("checking seen for {link}");
         if SEEN.lock().unwrap().contains(&link.to_string()) {
             debug!("seen {link}, skipping...");
@@ -88,7 +125,7 @@ async fn crawl(
         }
 
         task::spawn(crawl(
-            link.to_owned(),
+            url,
             allowed_subdomain.to_owned(),
             print_channel.clone(),
         ));
@@ -121,12 +158,12 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let url = args
+    let url_str = args
         .get(1)
         .expect("the index must exist due to previous len check");
 
-    let parsed_url = Url::parse(url)?;
-    let allowed_subdomain = parsed_url.host_str().ok_or(anyhow!("Missing host"))?;
+    let url = Url::parse(url_str)?;
+    let allowed_subdomain = url.host_str().ok_or(anyhow!("Missing host"))?;
     debug!("restricting links to {allowed_subdomain}");
 
     let (snd, rcv) = unbounded_channel();
@@ -211,6 +248,44 @@ mod tests {
 
         assert_eq!(filtered, expected);
     }
+
+    #[test]
+    fn relative_path_links_can_be_resolved() {
+        let url = Url::parse("https://example.com/dir/").expect("test URL should parse");
+        let links = HashSet::from_iter([
+            "foo.jpg".to_string(),
+            "bar.png".to_string(),
+            "../baz.gif".to_string(),
+        ]);
+        let expected = HashSet::from_iter([
+            "https://example.com/dir/foo.jpg".to_string(),
+            "https://example.com/dir/bar.png".to_string(),
+            "https://example.com/baz.gif".to_string(),
+        ]);
+
+        let resolved = resolve_relative_paths(&url, links);
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn relative_scheme_links_can_be_resolved() {
+        let url = Url::parse("https://example.com").expect("test URL should parse");
+        let links = HashSet::from_iter([
+            "//www.example.com/".to_string(),
+            "//example.com/foo.png".to_string(),
+            "//wikipedia.org".to_string(),
+        ]);
+        let expected = HashSet::from_iter([
+            "https://www.example.com/".to_string(),
+            "https://example.com/foo.png".to_string(),
+            "https://wikipedia.org/".to_string(),
+        ]);
+
+        let resolved = resolve_relative_schemes(&url, links);
+
+        assert_eq!(resolved, expected);
+    }
 }
 
 #[cfg(all(test, feature = "e2e"))]
@@ -228,7 +303,8 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn fetch_local_root() {
-        let res = fetch("http://localhost:8000/").await;
+        let url = Url::parse("http://localhost:8000/").expect("test URL is parseable");
+        let res = fetch(url).await;
 
         assert!(res.is_ok());
     }
@@ -237,7 +313,7 @@ mod e2e_tests {
     async fn no_links() {
         let (snd, rcv) = unbounded_channel();
         let allowed_subdomain = "localhost:8000".to_string();
-        let url = "http://localhost:8000/no-links.html".to_string();
+        let url = Url::parse("http://localhost:8000/no-links.html").expect("test URL is parseable");
 
         let expected = vec![CrawlData {
             url: "http://localhost:8000/no-links.html".to_string(),
@@ -256,7 +332,8 @@ mod e2e_tests {
     async fn recursive() {
         let (snd, rcv) = unbounded_channel();
         let allowed_subdomain = "localhost:8000".to_string();
-        let url = "http://localhost:8000/recursive.html".to_string();
+        let url =
+            Url::parse("http://localhost:8000/recursive.html").expect("test URL is parseable");
 
         let expected = vec![CrawlData {
             url: "http://localhost:8000/recursive.html".to_string(),
